@@ -15,26 +15,33 @@
 #include <signal.h>
 #include <string>
 #include <vector>
+#include <fstream>
+//#include <ctype.h>
+//#include <boost/algorithm/string.hpp>
 
 using namespace std;
 int stop_thread = 0;
 mutex _mtx;
 
 /*
- This is an example of streaming and filtering with multithreading.
+ This is an example of Producer and Consumer problem.
  
  Similar Problem:
  Word Count with multithreading can be accompished by procesing words
- in parallel suing consumer thread.
- 
+ in parallel suing consumer threads. This program add a filter to check occurrence of
+ perticular words.
+
+ The program read words through a producer thread from README.md file and enque
+ those words to a shared queue. The consumer threads dequeue those words from shared queue
+ and apply filter on top of it to count the occurence of set of words.  
+   
  Compilation:
- g++ StreamingAndFiltering.cpp -std=c++11 -lpthread
+ g++ WordCount-Multithreading.cpp -std=c++11 -lpthread
  
  Execution:
- ./a.out
+ ./a.out <Number of Consumer>
  
- To terminate the program, press ctrl+c, It will terminate working consumer threads,
- and then any letter to close the producer thread.
+
  */
 
 // A shared Queue to be used for serialized access of data
@@ -42,34 +49,72 @@ queue<string> Q;
 
 // A filter with unordered map.
 unordered_map<string, int> _filter;
+bool is_producer_done;
+
+void split(vector<string>& words, string& line)
+{
+  string word;
+  bool is_word;
+  
+  for ( auto w: line ){
+    if( w == ' ') {
+      if(is_word){
+        words.push_back(word);
+        word = "";
+        is_word = false;
+      }
+    }else{
+      is_word = true;
+      string s(1, w);
+      word.append(s);
+    }
+  }
+  words.push_back(word);
+}
+
+void lower(string& word)
+{
+    for(int index=0; index< word.length(); index++){
+       word[index] = tolower(word[index]);
+    }
+}
 
 /*
  Generate streaing data through standard input in a seperate thread.
  */
 void producer()
 {
-    string input;
     {
         unique_lock<mutex> lock(_mtx);
         cout<<"Producer Started ...\n";
+        is_producer_done = false;
     }
-    // Read from command line
-    while(true){
-        getline(cin,input);
-        cout<<"INPUT:"<<input<<endl;
-        {
-            unique_lock<mutex> lock(_mtx);
-            if(stop_thread){
-                break;
+    // Read from file.
+    ifstream stream;
+    stream.open("README.md");
+    if(stream.is_open()){
+        string line;
+        while(getline(stream, line)){
+            vector<string> words;
+            //boost::split(words,line, boost::is_any_of(" ")); // boost split can be used too.
+            split(words, line);
+            for( auto word: words)
+            {
+                //cout<<"INPUT:"<<word<<endl;
+                unique_lock<mutex> lock(_mtx);
+                if(stop_thread){
+                    break;
+                }
+                Q.push(word);
+                this_thread::sleep_for(std::chrono::milliseconds(5));
             }
-            Q.push(input);
-            this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
     
     {
         unique_lock<mutex> lock(_mtx);
         cout<<"Stopped Producer ..."<<endl;
+        is_producer_done = true;
     }
 }
 
@@ -84,21 +129,20 @@ void consumer(int consumer_id)
         cout<<"Consumer - Id"<<consumer_id<<endl;
     }
     while(true){
-        {
-            unique_lock<mutex> lock(_mtx);
-            if(stop_thread){
-                break;
-            }
-            if(!Q.empty()){
-                string entry = Q.front();
-                Q.pop();
-                if( _filter.find(entry) != _filter.end()){
-                    cout<<"Q entry:"<<entry<<endl;
-                    _filter[entry] = _filter[entry] + 1;
-                }
-            }
-            this_thread::sleep_for(std::chrono::milliseconds(10));
+        unique_lock<mutex> lock(_mtx);
+        if(stop_thread || ( Q.empty() && is_producer_done) ){
+            break;
         }
+        if(!Q.empty()){
+            string entry = Q.front();
+            Q.pop();
+            lower(entry);
+            if( _filter.find(entry) != _filter.end()){
+                cout<<"Consumer Id:"<<consumer_id<<" Q entry:"<<entry<<endl;
+                _filter[entry] = _filter[entry] + 1;
+            }
+        }
+        this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     cout<<"Stopping Consumer Thread - "<<consumer_id<<endl;
 }
@@ -115,8 +159,12 @@ void signal_handler(int signal)
 // Update filetr, or add filetr as needed.
 void filter()
 {
-    _filter.insert(make_pair("AA", 0));
-    _filter["BB"] = 0;
+    _filter.insert(make_pair("multithreading", 0));
+    _filter["includes"] = 0;
+    _filter["the"] = 0;
+    _filter["program"] = 0;
+    _filter["words"] = 0;
+    _filter["count"] = 0;
 }
 
 void display()
@@ -154,7 +202,9 @@ int main(int argc, const char * argv[]) {
     for(int index = 0; index <thread_list.size(); index++){
         thread_list[index].join();
     }
+
     // Display filtered output
+    cout<<"\nOccurrence of words ...\n";
     display();
     cout<<"All Done ... "<<endl;
     return 0;
